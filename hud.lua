@@ -5,6 +5,8 @@ local TweenService = game:GetService("TweenService")
 local TextService = game:GetService("TextService")
 local HttpService = game:GetService("HttpService")
 local Stats = game:GetService("Stats")
+local Lighting = game:GetService("Lighting")
+local CoreGui = game:GetService("CoreGui")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -33,7 +35,6 @@ end
 
 loadSettingsFromFile()
 
--- Helper to get/set persistent values safely
 local function getSavedValue(key, default)
 	if savedData[key] ~= nil then
 		return savedData[key]
@@ -53,7 +54,10 @@ local statStates = {
 	PLRS = getSavedValue("Stat_PLRS", true),
 	RAM = getSavedValue("Stat_RAM", true),
 	TIME = getSavedValue("Stat_TIME", true),
-	JIT = getSavedValue("Stat_JIT", true)
+	JIT = getSavedValue("Stat_JIT", true),
+	NOTIF = getSavedValue("Stat_NOTIF", true),
+	IGTIME = getSavedValue("Stat_IGTIME", true),
+	SPD = getSavedValue("Stat_SPD", true)
 }
 
 local function saveStatState(statName, state)
@@ -61,7 +65,7 @@ local function saveStatState(statName, state)
 	setSavedValue("Stat_" .. statName, state)
 end
 
--- Create Core GUI
+-- Create Core GUI (Parented to CoreGui so death/resets never wipe it)
 local ScreenGui = Instance.new("ScreenGui")
 local MainFrame = Instance.new("Frame")
 local UICorner = Instance.new("UICorner")
@@ -70,12 +74,18 @@ local UIStroke = Instance.new("UIStroke")
 local StatusDot = Instance.new("Frame")
 local DotCorner = Instance.new("UICorner")
 
--- ScreenGui Setup
-ScreenGui.Name = "ExpandedOverlayGui"
-ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+ScreenGui.Name = "ExpandedOverlayGui_Core"
 ScreenGui.ResetOnSpawn = false
+ScreenGui.IgnoreGuiInset = true
 
--- Position Persistence
+-- Safely parent to CoreGui with fallback if restricted by executor environment
+local successCore = pcall(function()
+	ScreenGui.Parent = CoreGui
+end)
+if not successCore then
+	ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+end
+
 local savedX = getSavedValue("PosX", 16)
 local savedY = getSavedValue("PosY", 16)
 
@@ -90,6 +100,19 @@ UICorner.Parent = MainFrame
 
 UIStroke.Thickness = 1
 UIStroke.Parent = MainFrame
+
+----------------------------------------------------
+-- SOUND EFFECTS FOR JOIN/LEAVE
+----------------------------------------------------
+local JoinSound = Instance.new("Sound")
+JoinSound.SoundId = "rbxassetid://4590662766"
+JoinSound.Volume = 0.5
+JoinSound.Parent = ScreenGui
+
+local LeaveSound = Instance.new("Sound")
+LeaveSound.SoundId = "rbxassetid://4590657391"
+LeaveSound.Volume = 0.5
+LeaveSound.Parent = ScreenGui
 
 ----------------------------------------------------
 -- COLOR THEME PRESETS & MANAGER
@@ -188,8 +211,9 @@ local PlayersLabel = createLabel("PlayersLabel")
 local RamLabel = createLabel("RamLabel")
 local ClockLabel = createLabel("ClockLabel")
 local JitterLabel = createLabel("JitterLabel")
+local IgTimeLabel = createLabel("IgTimeLabel")
+local SpeedLabel = createLabel("SpeedLabel")
 
--- Settings Gear Button
 local SettingsButton = Instance.new("TextButton")
 SettingsButton.Name = "SettingsButton"
 SettingsButton.Parent = MainFrame
@@ -199,6 +223,111 @@ SettingsButton.Text = "⚙"
 SettingsButton.TextColor3 = Color3.fromRGB(140, 150, 170)
 SettingsButton.TextSize = 14
 SettingsButton.ZIndex = 3
+
+----------------------------------------------------
+-- ADMIN CHECKER & NOTIFICATIONS
+----------------------------------------------------
+local NotifContainer = Instance.new("Frame")
+NotifContainer.Name = "NotifContainer"
+NotifContainer.Parent = ScreenGui
+NotifContainer.BackgroundTransparency = 1
+NotifContainer.Position = UDim2.new(0, savedX, 0, savedY + 120)
+NotifContainer.Size = UDim2.new(0, 260, 0, 150)
+NotifContainer.ZIndex = 5
+
+local notificationQueue = {}
+local isProcessingNotifs = false
+
+local function isAdmin(plr)
+	if not plr then return false end
+	if plr.UserId == game.CreatorId then return true end
+	local success, result = pcall(function()
+		return plr:GetRankInGroup(game.CreatorId) >= 250
+	end)
+	if success and result then return true end
+	return false
+end
+
+local function showNotification(message, duration, colorHex)
+	if not statStates.NOTIF then return end
+	table.insert(notificationQueue, {Msg = message, Dur = duration, Col = colorHex})
+	
+	if isProcessingNotifs then return end
+	isProcessingNotifs = true
+
+	task.spawn(function()
+		while #notificationQueue > 0 do
+			local data = table.remove(notificationQueue, 1)
+			
+			local toast = Instance.new("Frame")
+			toast.Size = UDim2.new(1, 0, 0, 28)
+			toast.Position = UDim2.new(0, 0, 1, 0)
+			toast.BackgroundColor3 = Color3.fromRGB(20, 20, 26)
+			toast.BackgroundTransparency = 0.2
+			toast.BorderSizePixel = 0
+			toast.Parent = NotifContainer
+			
+			local tCorner = Instance.new("UICorner")
+			tCorner.CornerRadius = UDim.new(0, 6)
+			tCorner.Parent = toast
+			
+			local tStroke = Instance.new("UIStroke")
+			tStroke.Color = Color3.fromHex(data.Col or "#82AAFF")
+			tStroke.Transparency = 0.4
+			tStroke.Thickness = 1
+			tStroke.Parent = toast
+			
+			local tLabel = Instance.new("TextLabel")
+			tLabel.Size = UDim2.new(1, -12, 1, 0)
+			tLabel.Position = UDim2.new(0, 6, 0, 0)
+			tLabel.BackgroundTransparency = 1
+			tLabel.Font = Enum.Font.GothamMedium
+			tLabel.TextSize = 11
+			tLabel.TextColor3 = Color3.fromRGB(230, 235, 245)
+			tLabel.RichText = true
+			tLabel.Text = data.Msg
+			tLabel.TextXAlignment = Enum.TextXAlignment.Left
+			tLabel.Parent = toast
+			
+			toast.Position = UDim2.new(0, 0, 0, 40)
+			toast.BackgroundTransparency = 1
+			tLabel.TextTransparency = 1
+			tStroke.Transparency = 1
+			
+			TweenService:Create(toast, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Position = UDim2.new(0, 0, 0, 0), BackgroundTransparency = 0.2}):Play()
+			TweenService:Create(tLabel, TweenInfo.new(0.2), {TextTransparency = 0}):Play()
+			TweenService:Create(tStroke, TweenInfo.new(0.2), {Transparency = 0.4}):Play()
+			
+			task.wait(data.Dur)
+			
+			TweenService:Create(toast, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {Position = UDim2.new(0, 0, 0, -20), BackgroundTransparency = 1}):Play()
+			TweenService:Create(tLabel, TweenInfo.new(0.2), {TextTransparency = 1}):Play()
+			TweenService:Create(tStroke, TweenInfo.new(0.2), {Transparency = 1}):Play()
+			
+			task.wait(0.25)
+			toast:Destroy()
+		end
+		isProcessingNotifs = false
+	end)
+end
+
+Players.PlayerAdded:Connect(function(plr)
+	local adminCheck = isAdmin(plr)
+	local colorHex = adminCheck and "#FE4E4E" or "#4EFE88"
+	local tag = adminCheck and "[ADMIN] " or ""
+	JoinSound:Play()
+	showNotification(string.format("<font color=\"%s\">+</font> <b>%s%s</b> has joined", colorHex, tag, plr.Name), 5, colorHex)
+	if refreshDisplayAndSize then refreshDisplayAndSize() end
+end)
+
+Players.PlayerRemoving:Connect(function(plr)
+	local adminCheck = isAdmin(plr)
+	local colorHex = adminCheck and "#FE4E4E" or "#FE4E4E"
+	local tag = adminCheck and "[ADMIN] " or ""
+	LeaveSound:Play()
+	showNotification(string.format("<font color=\"%s\">-</font> <b>%s%s</b> has left", colorHex, tag, plr.Name), 3, colorHex)
+	if refreshDisplayAndSize then refreshDisplayAndSize() end
+end)
 
 ----------------------------------------------------
 -- STATE & SETTINGS (KEYBINDS)
@@ -231,8 +360,9 @@ local currentPing = 0
 local lastPing = 0
 local currentJitter = 0
 local currentRam = 0
+local currentSpeed = 0
 
-local inputConnection, renderConnection, playerAddedConn, playerRemovingConn
+local inputConnection, renderConnection
 
 ----------------------------------------------------
 -- SETTINGS PANEL CREATION
@@ -243,7 +373,7 @@ SettingsFrame.Parent = ScreenGui
 SettingsFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
 SettingsFrame.BackgroundTransparency = 0.1
 SettingsFrame.Size = UDim2.new(0, 340, 0, 420)
-SettingsFrame.CanvasSize = UDim2.new(0, 0, 0, 660)
+SettingsFrame.CanvasSize = UDim2.new(0, 0, 0, 780)
 SettingsFrame.ScrollBarThickness = 4
 SettingsFrame.Visible = false
 SettingsFrame.Active = true
@@ -285,7 +415,6 @@ local CloseCorner = Instance.new("UICorner")
 CloseCorner.CornerRadius = UDim.new(0, 4)
 CloseCorner.Parent = CloseSettingsBtn
 
--- Enhanced Save Settings Button
 local SaveSettingsBtn = Instance.new("TextButton")
 SaveSettingsBtn.Parent = SettingsFrame
 SaveSettingsBtn.BackgroundColor3 = Color3.fromRGB(35, 110, 200)
@@ -302,28 +431,6 @@ local SaveCorner = Instance.new("UICorner")
 SaveCorner.CornerRadius = UDim.new(0, 6)
 SaveCorner.Parent = SaveSettingsBtn
 
-local SaveStroke = Instance.new("UIStroke")
-SaveStroke.Color = Color3.fromRGB(100, 170, 255)
-SaveStroke.Transparency = 0.4
-SaveStroke.Thickness = 1
-SaveStroke.Parent = SaveSettingsBtn
-
-local SaveGradient = Instance.new("UIGradient")
-SaveGradient.Color = ColorSequence.new({
-	ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
-	ColorSequenceKeypoint.new(1, Color3.fromRGB(180, 210, 255))
-})
-SaveGradient.Rotation = 90
-SaveGradient.Parent = SaveSettingsBtn
-
-SaveSettingsBtn.MouseEnter:Connect(function()
-	TweenService:Create(SaveSettingsBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(45, 130, 235)}):Play()
-end)
-
-SaveSettingsBtn.MouseLeave:Connect(function()
-	TweenService:Create(SaveSettingsBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(35, 110, 200)}):Play()
-end)
-
 SaveSettingsBtn.MouseButton1Click:Connect(function()
 	setSavedValue("PosX", MainFrame.Position.X.Offset)
 	setSavedValue("PosY", MainFrame.Position.Y.Offset)
@@ -333,12 +440,10 @@ SaveSettingsBtn.MouseButton1Click:Connect(function()
 	
 	SaveSettingsBtn.Text = "✔  Settings Saved!"
 	TweenService:Create(SaveSettingsBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(46, 204, 113)}):Play()
-	TweenService:Create(SaveStroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(150, 255, 190)}):Play()
 	
 	task.delay(1.2, function()
 		SaveSettingsBtn.Text = "💾  Save Settings"
 		TweenService:Create(SaveSettingsBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(35, 110, 200)}):Play()
-		TweenService:Create(SaveStroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(100, 170, 255)}):Play()
 	end)
 end)
 
@@ -396,37 +501,13 @@ local function createSectionHeader(title, yPos)
 end
 
 local rebindTarget = nil
-local rebindButtonText = nil
 
-local bindToggleBtn = createSettingRow("Toggle HUD", 85, function(btn)
-	rebindTarget = "Toggle"
-	btn.Text = "Press any key..."
-end)
-
-local bindSimpleBtn = createSettingRow("Simplified Mode", 120, function(btn)
-	rebindTarget = "Simplified"
-	btn.Text = "Press any key..."
-end)
-
-local bindScaleBtn = createSettingRow("Cycle Scale", 155, function(btn)
-	rebindTarget = "Scale"
-	btn.Text = "Press any key..."
-end)
-
-local bindThemeBtn = createSettingRow("Cycle Theme", 190, function(btn)
-	rebindTarget = "Theme"
-	btn.Text = "Press any key..."
-end)
-
-local bindSettingsBtn = createSettingRow("Toggle Settings", 225, function(btn)
-	rebindTarget = "Settings"
-	btn.Text = "Press any key..."
-end)
-
-local bindDestroyBtn = createSettingRow("Destroy Script", 260, function(btn)
-	rebindTarget = "Destroy"
-	btn.Text = "Press any key..."
-end)
+local bindToggleBtn = createSettingRow("Toggle HUD", 85, function(btn) rebindTarget = "Toggle" btn.Text = "Press any key..." end)
+local bindSimpleBtn = createSettingRow("Simplified Mode", 120, function(btn) rebindTarget = "Simplified" btn.Text = "Press any key..." end)
+local bindScaleBtn = createSettingRow("Cycle Scale", 155, function(btn) rebindTarget = "Scale" btn.Text = "Press any key..." end)
+local bindThemeBtn = createSettingRow("Cycle Theme", 190, function(btn) rebindTarget = "Theme" btn.Text = "Press any key..." end)
+local bindSettingsBtn = createSettingRow("Toggle Settings", 225, function(btn) rebindTarget = "Settings" btn.Text = "Press any key..." end)
+local bindDestroyBtn = createSettingRow("Destroy Script", 260, function(btn) rebindTarget = "Destroy" btn.Text = "Press any key..." end)
 
 createSectionHeader("PRESETS & THEMES", 300)
 
@@ -440,16 +521,14 @@ local scaleCycleBtn = createSettingRow("Scale", 360, function()
 	currentScaleIndex = (currentScaleIndex % #Scales) + 1
 	setSavedValue("ScaleIndex", currentScaleIndex)
 	refreshDisplayAndSize()
-	if refreshSettingsLabels then
-		refreshSettingsLabels()
-	end
+	if refreshSettingsLabels then refreshSettingsLabels() end
 end)
 scaleCycleBtn.Text = Scales[currentScaleIndex] .. "x"
 
-createSectionHeader("SIMPLE MODE TOGGLES", 405)
+createSectionHeader("STATS & NOTIFICATIONS", 405)
 
 local statToggleButtons = {}
-local statList = {"FPS", "PING", "PLRS", "RAM", "TIME", "JIT"}
+local statList = {"FPS", "PING", "PLRS", "RAM", "TIME", "JIT", "NOTIF", "IGTIME", "SPD"}
 local startY = 430
 
 for i, statName in ipairs(statList) do
@@ -485,19 +564,13 @@ local function toggleSettingsMenu(show)
 		updateSettingsPosition()
 		refreshSettingsLabels()
 		SettingsFrame.Visible = true
-		TweenService:Create(SettingsFrame, TweenInfo.new(0.2), {BackgroundTransparency = 0.1}):Play()
 	else
 		SettingsFrame.Visible = false
 	end
 end
 
-CloseSettingsBtn.MouseButton1Click:Connect(function()
-	toggleSettingsMenu(false)
-end)
-
-SettingsButton.MouseButton1Click:Connect(function()
-	toggleSettingsMenu(not isSettingsOpen)
-end)
+CloseSettingsBtn.MouseButton1Click:Connect(function() toggleSettingsMenu(false) end)
+SettingsButton.MouseButton1Click:Connect(function() toggleSettingsMenu(not isSettingsOpen) end)
 
 ----------------------------------------------------
 -- FORMATTING HELPERS
@@ -528,6 +601,10 @@ local function getJitterColor(jit)
 	return "<font color=\"#FE4E4E\">" .. jit .. " ms</font>"
 end
 
+local function getSpeedColor(spd)
+	return string.format("<font color=\"#82AAFF\">%d s/s</font>", spd)
+end
+
 local function getPlayersFormatted()
 	local count = #Players:GetPlayers()
 	local maxCount = Players.MaxPlayers
@@ -535,6 +612,31 @@ local function getPlayersFormatted()
 	local colorHex = "#4EFE88"
 	if ratio >= 1.0 then colorHex = "#FE4E4E" elseif ratio >= 0.8 then colorHex = "#FEEA4E" end
 	return string.format("<font color=\"%s\">%d/%d</font>", colorHex, count, maxCount)
+end
+
+local function getInGameTimeFormatted()
+	local t = Lighting.TimeOfDay
+	local parts = {}
+	for part in string.gmatch(t, "[^:]+") do
+		table.insert(parts, tonumber(part))
+	end
+	local hours = parts[1] or 0
+	local minutes = parts[2] or 0
+	
+	local ampm = "AM"
+	if hours >= 12 then
+		ampm = "PM"
+		if hours > 12 then hours = hours - 12 end
+	end
+	if hours == 0 then hours = 12 end
+	
+	local timeString = string.format("%02d:%02d %s", hours, minutes, ampm)
+	
+	if timeString == "02:00 PM" then
+		return timeString .. " <font color=\"#4EFE88\">[On]</font>"
+	else
+		return timeString .. " <font color=\"#FE4E4E\">[Off]</font>"
+	end
 end
 
 local function stripRichText(str)
@@ -570,12 +672,15 @@ refreshDisplayAndSize = function()
 	RamLabel.TextSize = fontSize
 	ClockLabel.TextSize = fontSize
 	JitterLabel.TextSize = fontSize
+	IgTimeLabel.TextSize = fontSize
+	SpeedLabel.TextSize = fontSize
 
 	local accentHex = Themes[currentThemeIndex].AccentHex
 	TitleLabel.Text = string.format("<font color=\"%s\">DANIK'S HUD</font>", accentHex)
 	CreditLabel.Text = "MADE BY DANIKI"
 
 	local clockStr = string.format("<font color=\"%s\">%s</font>", accentHex, os.date("%I:%M %p"))
+	local igTimeStr = getInGameTimeFormatted()
 
 	FpsLabel.Visible = false
 	PingLabel.Visible = false
@@ -583,6 +688,8 @@ refreshDisplayAndSize = function()
 	RamLabel.Visible = false
 	ClockLabel.Visible = false
 	JitterLabel.Visible = false
+	IgTimeLabel.Visible = false
+	SpeedLabel.Visible = false
 	
 	local activeItems = {}
 	
@@ -592,6 +699,8 @@ refreshDisplayAndSize = function()
 	local ramFormatted = LABEL_COLOR .. "RAM</font>   " .. getRamColor(currentRam)
 	local clockFormatted = LABEL_COLOR .. "TIME</font>  " .. clockStr
 	local jitFormatted = LABEL_COLOR .. "JIT</font>   " .. getJitterColor(currentJitter)
+	local igTimeFormatted = LABEL_COLOR .. "IGTIME</font> " .. igTimeStr
+	local speedFormatted = LABEL_COLOR .. "SPD</font>    " .. getSpeedColor(currentSpeed)
 
 	if not isSimplified then
 		table.insert(activeItems, {Label = FpsLabel, Text = fpsFormatted})
@@ -600,6 +709,8 @@ refreshDisplayAndSize = function()
 		table.insert(activeItems, {Label = RamLabel, Text = ramFormatted})
 		table.insert(activeItems, {Label = ClockLabel, Text = clockFormatted})
 		table.insert(activeItems, {Label = JitterLabel, Text = jitFormatted})
+		table.insert(activeItems, {Label = IgTimeLabel, Text = igTimeFormatted})
+		table.insert(activeItems, {Label = SpeedLabel, Text = speedFormatted})
 		CreditLabel.Visible = true
 	else
 		if statStates.FPS then table.insert(activeItems, {Label = FpsLabel, Text = fpsFormatted}) end
@@ -608,6 +719,8 @@ refreshDisplayAndSize = function()
 		if statStates.RAM then table.insert(activeItems, {Label = RamLabel, Text = ramFormatted}) end
 		if statStates.TIME then table.insert(activeItems, {Label = ClockLabel, Text = clockFormatted}) end
 		if statStates.JIT then table.insert(activeItems, {Label = JitterLabel, Text = jitFormatted}) end
+		if statStates.IGTIME then table.insert(activeItems, {Label = IgTimeLabel, Text = igTimeFormatted}) end
+		if statStates.SPD then table.insert(activeItems, {Label = SpeedLabel, Text = speedFormatted}) end
 		CreditLabel.Visible = false
 	end
 
@@ -684,14 +797,12 @@ refreshDisplayAndSize = function()
 	end
 
 	TweenService:Create(MainFrame, sizeTweenInfo, {Size = UDim2.new(0, targetWidth, 0, targetHeight)}):Play()
+	NotifContainer.Position = UDim2.new(0, MainFrame.Position.X.Offset, 0, MainFrame.Position.Y.Offset + targetHeight + 6)
 	
 	if isSettingsOpen then
 		updateSettingsPosition()
 	end
 end
-
-playerAddedConn = Players.PlayerAdded:Connect(refreshDisplayAndSize)
-playerRemovingConn = Players.PlayerRemoving:Connect(refreshDisplayAndSize)
 
 ----------------------------------------------------
 -- DRAGGABLE LOGIC
@@ -725,26 +836,35 @@ UserInputService.InputChanged:Connect(function(input)
 	if input == dragInput and dragging then
 		local delta = input.Position - dragStart
 		MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+		NotifContainer.Position = UDim2.new(0, MainFrame.Position.X.Offset, 0, MainFrame.Position.Y.Offset + MainFrame.AbsoluteSize.Y + 6)
 		if isSettingsOpen then updateSettingsPosition() end
 	end
 end)
 
 ----------------------------------------------------
--- FADE TWEENING
+-- FADE TWEENING & KEYBINDS
 ----------------------------------------------------
 local fadeTweenInfo = TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 
 local function setVisibilitySmooth(show)
 	isVisible = show
+	
+	local themeTrans = Themes[currentThemeIndex].StrokeTrans
+	local currentThemeBg = Themes[currentThemeIndex].Bg
+
 	TweenService:Create(MainFrame, fadeTweenInfo, {BackgroundTransparency = show and 0.25 or 1}):Play()
-	TweenService:Create(UIStroke, fadeTweenInfo, {Transparency = show and Themes[currentThemeIndex].StrokeTrans or 1}):Play()
+	TweenService:Create(UIStroke, fadeTweenInfo, {Transparency = show and themeTrans or 1}):Play()
 	TweenService:Create(StatusDot, fadeTweenInfo, {BackgroundTransparency = show and 0 or 1}):Play()
 	TweenService:Create(DotStrokeInstance, fadeTweenInfo, {Transparency = show and 0.5 or 1}):Play()
 	TweenService:Create(SettingsButton, fadeTweenInfo, {TextTransparency = show and 0 or 1}):Play()
 
 	for _, child in ipairs(MainFrame:GetChildren()) do
 		if child:IsA("TextLabel") and child.Visible then
-			TweenService:Create(child, fadeTweenInfo, {TextTransparency = show and 0 or 1}):Play()
+			local targetTextTrans = 0
+			if child == CreditLabel and isSimplified then
+				targetTextTrans = 1
+			end
+			TweenService:Create(child, fadeTweenInfo, {TextTransparency = show and targetTextTrans or 1}):Play()
 		end
 	end
 	
@@ -753,15 +873,10 @@ local function setVisibilitySmooth(show)
 	end
 end
 
-----------------------------------------------------
--- KEYBINDS
-----------------------------------------------------
 local function destroyScript()
 	if dotPulseTween then dotPulseTween:Cancel() end
 	if renderConnection then renderConnection:Disconnect() end
 	if inputConnection then inputConnection:Disconnect() end
-	if playerAddedConn then playerAddedConn:Disconnect() end
-	if playerRemovingConn then playerRemovingConn:Disconnect() end
 	ScreenGui:Destroy()
 end
 
@@ -786,29 +901,17 @@ inputConnection = UserInputService.InputBegan:Connect(function(input, gameProces
 
 	if gameProcessed then return end
 
-	if input.KeyCode == TOGGLE_KEY then
-		setVisibilitySmooth(not isVisible)
-	elseif input.KeyCode == SIMPLIFIED_KEY then
-		isSimplified = not isSimplified
-		refreshDisplayAndSize()
-	elseif input.KeyCode == SCALE_KEY then
-		currentScaleIndex = (currentScaleIndex % #Scales) + 1
-		setSavedValue("ScaleIndex", currentScaleIndex)
-		refreshDisplayAndSize()
-		refreshSettingsLabels()
-	elseif input.KeyCode == THEME_KEY then
-		currentThemeIndex = (currentThemeIndex % #Themes) + 1
-		applyTheme(currentThemeIndex)
-		refreshDisplayAndSize()
-	elseif input.KeyCode == SETTINGS_KEY then
-		toggleSettingsMenu(not isSettingsOpen)
-	elseif input.KeyCode == DESTROY_KEY then
-		destroyScript()
+	if input.KeyCode == TOGGLE_KEY then setVisibilitySmooth(not isVisible)
+	elseif input.KeyCode == SIMPLIFIED_KEY then isSimplified = not isSimplified refreshDisplayAndSize()
+	elseif input.KeyCode == SCALE_KEY then currentScaleIndex = (currentScaleIndex % #Scales) + 1 setSavedValue("ScaleIndex", currentScaleIndex) refreshDisplayAndSize() refreshSettingsLabels()
+	elseif input.KeyCode == THEME_KEY then currentThemeIndex = (currentThemeIndex % #Themes) + 1 applyTheme(currentThemeIndex) refreshDisplayAndSize()
+	elseif input.KeyCode == SETTINGS_KEY then toggleSettingsMenu(not isSettingsOpen)
+	elseif input.KeyCode == DESTROY_KEY then destroyScript()
 	end
 end)
 
 ----------------------------------------------------
--- MAIN UPDATE LOOP
+-- MAIN UPDATE LOOP (WITH CHARACTER RESPAWN SAFETY)
 ----------------------------------------------------
 renderConnection = RunService.RenderStepped:Connect(function(deltaTime)
 	if not isVisible then return end
@@ -821,6 +924,19 @@ renderConnection = RunService.RenderStepped:Connect(function(deltaTime)
 		currentPing = math.floor(LocalPlayer:GetNetworkPing() * 1000)
 		currentRam = math.floor(Stats:GetTotalMemoryUsageMb())
 		
+		local character = LocalPlayer.Character
+		if character then
+			local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
+			if humanoidRootPart then
+				local velocity = humanoidRootPart.AssemblyLinearVelocity
+				currentSpeed = math.floor(Vector3.new(velocity.X, 0, velocity.Z).Magnitude)
+			else
+				currentSpeed = 0
+			end
+		else
+			currentSpeed = 0
+		end
+
 		if lastPing > 0 then
 			currentJitter = math.abs(currentPing - lastPing)
 		end
