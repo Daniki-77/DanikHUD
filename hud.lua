@@ -78,7 +78,6 @@ ScreenGui.Name = "ExpandedOverlayGui_Core"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.IgnoreGuiInset = true
 
--- Safely parent to CoreGui with fallback if restricted by executor environment
 local successCore = pcall(function()
 	ScreenGui.Parent = CoreGui
 end)
@@ -93,7 +92,8 @@ MainFrame.Name = "MainFrame"
 MainFrame.Parent = ScreenGui
 MainFrame.Position = UDim2.new(0, savedX, 0, savedY)
 MainFrame.Active = true
-MainFrame.ClipsDescendants = true
+MainFrame.ClipsDescendants = false -- Changed to false so settings drop down cleanly outside if needed
+MainFrame.ZIndex = 2
 
 UICorner.CornerRadius = UDim.new(0, 8)
 UICorner.Parent = MainFrame
@@ -151,7 +151,7 @@ UIStroke.Transparency = Themes[currentThemeIndex].StrokeTrans
 StatusDot.Name = "StatusDot"
 StatusDot.Parent = MainFrame
 StatusDot.BackgroundColor3 = Color3.fromRGB(78, 254, 136)
-StatusDot.ZIndex = 2
+StatusDot.ZIndex = 3
 
 DotCorner.CornerRadius = UDim.new(1, 0)
 DotCorner.Parent = StatusDot
@@ -195,6 +195,7 @@ local function createLabel(name)
 	label.TextXAlignment = Enum.TextXAlignment.Left
 	label.TextYAlignment = Enum.TextYAlignment.Center
 	label.RichText = true
+	label.ZIndex = 3
 	return label
 end
 
@@ -222,7 +223,7 @@ SettingsButton.Font = Enum.Font.GothamBold
 SettingsButton.Text = "⚙"
 SettingsButton.TextColor3 = Color3.fromRGB(140, 150, 170)
 SettingsButton.TextSize = 14
-SettingsButton.ZIndex = 3
+SettingsButton.ZIndex = 4
 
 ----------------------------------------------------
 -- ADMIN CHECKER & NOTIFICATIONS
@@ -347,7 +348,6 @@ local Scales = {0.85, 1.0, 1.25}
 local currentScaleIndex = math.clamp(getSavedValue("ScaleIndex", 2), 1, #Scales)
 
 local UPDATE_INTERVAL = 0.15
-local sizeTweenInfo = TweenInfo.new(0.08, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 
 local frameCount = 0
 local elapsedTime = 0
@@ -365,14 +365,15 @@ local currentSpeed = 0
 local inputConnection, renderConnection
 
 ----------------------------------------------------
--- SETTINGS PANEL CREATION
+-- SETTINGS PANEL CREATION (Parented directly to MainFrame)
 ----------------------------------------------------
 local SettingsFrame = Instance.new("ScrollingFrame")
 SettingsFrame.Name = "SettingsFrame"
-SettingsFrame.Parent = ScreenGui
+SettingsFrame.Parent = MainFrame -- Parented directly to MainFrame so it cleanly follows it!
 SettingsFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
 SettingsFrame.BackgroundTransparency = 0.1
-SettingsFrame.Size = UDim2.new(0, 340, 0, 420)
+SettingsFrame.Position = UDim2.new(0, 0, 1, 6) -- Anchored perfectly 6 pixels below MainFrame's bottom edge!
+SettingsFrame.Size = UDim2.new(1, 0, 0, 420)
 SettingsFrame.CanvasSize = UDim2.new(0, 0, 0, 780)
 SettingsFrame.ScrollBarThickness = 4
 SettingsFrame.Visible = false
@@ -446,10 +447,6 @@ SaveSettingsBtn.MouseButton1Click:Connect(function()
 		TweenService:Create(SaveSettingsBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(35, 110, 200)}):Play()
 	end)
 end)
-
-local function updateSettingsPosition()
-	SettingsFrame.Position = UDim2.new(0, MainFrame.AbsolutePosition.X, 0, MainFrame.AbsolutePosition.Y + MainFrame.AbsoluteSize.Y + 8)
-end
 
 local function createSettingRow(name, yPos, onClick)
 	local label = Instance.new("TextLabel")
@@ -560,12 +557,9 @@ refreshSettingsLabels()
 
 local function toggleSettingsMenu(show)
 	isSettingsOpen = show
+	SettingsFrame.Visible = show
 	if show then
-		updateSettingsPosition()
 		refreshSettingsLabels()
-		SettingsFrame.Visible = true
-	else
-		SettingsFrame.Visible = false
 	end
 end
 
@@ -796,12 +790,11 @@ refreshDisplayAndSize = function()
 		targetHeight = creditY + creditHeight + math.round(10 * scale)
 	end
 
-	TweenService:Create(MainFrame, sizeTweenInfo, {Size = UDim2.new(0, targetWidth, 0, targetHeight)}):Play()
+	MainFrame.Size = UDim2.new(0, targetWidth, 0, targetHeight)
 	NotifContainer.Position = UDim2.new(0, MainFrame.Position.X.Offset, 0, MainFrame.Position.Y.Offset + targetHeight + 6)
 	
-	if isSettingsOpen then
-		updateSettingsPosition()
-	end
+	-- Keep settings frame width matched precisely to MainFrame width dynamically
+	SettingsFrame.Size = UDim2.new(1, 0, 0, 420)
 end
 
 ----------------------------------------------------
@@ -837,7 +830,6 @@ UserInputService.InputChanged:Connect(function(input)
 		local delta = input.Position - dragStart
 		MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
 		NotifContainer.Position = UDim2.new(0, MainFrame.Position.X.Offset, 0, MainFrame.Position.Y.Offset + MainFrame.AbsoluteSize.Y + 6)
-		if isSettingsOpen then updateSettingsPosition() end
 	end
 end)
 
@@ -850,7 +842,6 @@ local function setVisibilitySmooth(show)
 	isVisible = show
 	
 	local themeTrans = Themes[currentThemeIndex].StrokeTrans
-	local currentThemeBg = Themes[currentThemeIndex].Bg
 
 	TweenService:Create(MainFrame, fadeTweenInfo, {BackgroundTransparency = show and 0.25 or 1}):Play()
 	TweenService:Create(UIStroke, fadeTweenInfo, {Transparency = show and themeTrans or 1}):Play()
@@ -911,7 +902,7 @@ inputConnection = UserInputService.InputBegan:Connect(function(input, gameProces
 end)
 
 ----------------------------------------------------
--- MAIN UPDATE LOOP (WITH CHARACTER RESPAWN SAFETY)
+-- MAIN UPDATE LOOP
 ----------------------------------------------------
 renderConnection = RunService.RenderStepped:Connect(function(deltaTime)
 	if not isVisible then return end
